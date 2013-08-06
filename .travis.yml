@@ -2,6 +2,8 @@ language: cpp
 
 compiler: gcc
 
-before_install: ./autogen.sh
-
-script: echo "Done!"
+script:
+  - ./autogen.sh
+  - ./configure
+  - make
+  - make install
