@@ -331,6 +331,13 @@ int WebPReportProgress(const WebPPicture* const pic,
   }
   return 1;  // ok
 }
+
+//------------------------------------------------------------------------------
+
+void WebPFree(void* ptr) {
+  free(ptr);
+}
+
 //------------------------------------------------------------------------------
 
 int WebPEncode(const WebPConfig* config, WebPPicture* pic) {

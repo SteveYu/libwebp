@@ -474,6 +474,10 @@ WEBP_EXTERN(int) WebPPictureHasTransparency(const WebPPicture* picture);
 // After this call, all alpha values are reset to 0xff.
 WEBP_EXTERN(void) WebPBlendAlpha(WebPPicture* pic, uint32_t background_rgb);
 
+// This function should be used in place of free() for memory
+// returned by the WebP API.
+WEBP_EXTERN(void) WebPFree(void* ptr);
+
 //------------------------------------------------------------------------------
 // Main call
 
