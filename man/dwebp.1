@@ -1,5 +1,5 @@
 .\"                                      Hey, EMACS: -*- nroff -*-
-.TH DWEBP 1 "May 10, 2013"
+.TH DWEBP 1 "December 12, 2013"
 .SH NAME
 dwebp \- decompress a WebP file to an image file
 .SH SYNOPSIS
@@ -23,6 +23,7 @@ Print the version number (as major.minor.revision) and exit.
 .TP
 .BI \-o " string
 Specify the name of the output file (as PNG format by default).
+Using "-" as output name will direct output to 'stdout'.
 .TP
 .B \-bmp
 Change the output format to uncompressed BMP.
@@ -38,7 +39,7 @@ Change the output format to PPM (discards alpha).
 .TP
 .B \-pgm
 Change the output format to PGM. The output consists of luma/chroma
-samples instead of RGB, using the ICM4 layout. This option is mainly
+samples instead of RGB, using the IMC4 layout. This option is mainly
 for verification and debugging purposes.
 .TP
 .B \-yuv
@@ -54,7 +55,15 @@ edges (especially the red ones), but should be faster.
 .B \-nofilter
 Don't use the in-loop filtering process even if it is required by
 the bitstream. This may produce visible blocks on the non-compliant output,
-but will make the decoding faster.
+but it will make the decoding faster.
+.TP
+.B \-dither " strength
+Specify a dithering \fBstrength\fP between 0 and 100. Dithering is a
+post-processing effect applied to chroma components in lossy compression.
+It helps by smoothing gradients and avoiding banding artifacts.
+.TP
+.B \-nodither
+Disable all dithering (default).
 .TP
 .B \-mt
 Use multi-threading for decoding, if possible.
@@ -90,6 +99,8 @@ http://www.webmproject.org/code/contribute/submitting-patches/
 dwebp picture.webp \-o output.png
 .br
 dwebp picture.webp \-ppm \-o output.ppm
+.br
+dwebp \-o output.ppm \-\- \-\-\-picture.webp
 
 .SH AUTHORS
 \fBdwebp\fP was written by the WebP team.
@@ -101,8 +112,8 @@ for the Debian project (and may be used by others).
 
 .SH SEE ALSO
 .BR cwebp (1),
-.BR webpmux (1),
-.BR gif2webp (1).
+.BR gif2webp (1),
+.BR webpmux (1)
 .br
 Please refer to http://developers.google.com/speed/webp/ for additional
 information.

@@ -12,44 +12,45 @@
 
 // Code Example: Demuxing WebP data to extract all the frames, ICC profile
 // and EXIF/XMP metadata.
-//
-//   WebPDemuxer* demux = WebPDemux(&webp_data);
-//
-//   uint32_t width = WebPDemuxGetI(demux, WEBP_FF_CANVAS_WIDTH);
-//   uint32_t height = WebPDemuxGetI(demux, WEBP_FF_CANVAS_HEIGHT);
-//   // ... (Get information about the features present in the WebP file).
-//   uint32_t flags = WebPDemuxGetI(demux, WEBP_FF_FORMAT_FLAGS);
-//
-//   // ... (Iterate over all frames).
-//   WebPIterator iter;
-//   if (WebPDemuxGetFrame(demux, 1, &iter)) {
-//     do {
-//       // ... (Consume 'iter'; e.g. Decode 'iter.fragment' with WebPDecode(),
-//       // ... and get other frame properties like width, height, offsets etc.
-//       // ... see 'struct WebPIterator' below for more info).
-//     } while (WebPDemuxNextFrame(&iter));
-//     WebPDemuxReleaseIterator(&iter);
-//   }
-//
-//   // ... (Extract metadata).
-//   WebPChunkIterator chunk_iter;
-//   if (flags & ICCP_FLAG) WebPDemuxGetChunk(demux, "ICCP", 1, &chunk_iter);
-//   // ... (Consume the ICC profile in 'chunk_iter.chunk').
-//   WebPDemuxReleaseChunkIterator(&chunk_iter);
-//   if (flags & EXIF_FLAG) WebPDemuxGetChunk(demux, "EXIF", 1, &chunk_iter);
-//   // ... (Consume the EXIF metadata in 'chunk_iter.chunk').
-//   WebPDemuxReleaseChunkIterator(&chunk_iter);
-//   if (flags & XMP_FLAG) WebPDemuxGetChunk(demux, "XMP ", 1, &chunk_iter);
-//   // ... (Consume the XMP metadata in 'chunk_iter.chunk').
-//   WebPDemuxReleaseChunkIterator(&chunk_iter);
-//   WebPDemuxDelete(demux);
+/*
+  WebPDemuxer* demux = WebPDemux(&webp_data);
+
+  uint32_t width = WebPDemuxGetI(demux, WEBP_FF_CANVAS_WIDTH);
+  uint32_t height = WebPDemuxGetI(demux, WEBP_FF_CANVAS_HEIGHT);
+  // ... (Get information about the features present in the WebP file).
+  uint32_t flags = WebPDemuxGetI(demux, WEBP_FF_FORMAT_FLAGS);
+
+  // ... (Iterate over all frames).
+  WebPIterator iter;
+  if (WebPDemuxGetFrame(demux, 1, &iter)) {
+    do {
+      // ... (Consume 'iter'; e.g. Decode 'iter.fragment' with WebPDecode(),
+      // ... and get other frame properties like width, height, offsets etc.
+      // ... see 'struct WebPIterator' below for more info).
+    } while (WebPDemuxNextFrame(&iter));
+    WebPDemuxReleaseIterator(&iter);
+  }
+
+  // ... (Extract metadata).
+  WebPChunkIterator chunk_iter;
+  if (flags & ICCP_FLAG) WebPDemuxGetChunk(demux, "ICCP", 1, &chunk_iter);
+  // ... (Consume the ICC profile in 'chunk_iter.chunk').
+  WebPDemuxReleaseChunkIterator(&chunk_iter);
+  if (flags & EXIF_FLAG) WebPDemuxGetChunk(demux, "EXIF", 1, &chunk_iter);
+  // ... (Consume the EXIF metadata in 'chunk_iter.chunk').
+  WebPDemuxReleaseChunkIterator(&chunk_iter);
+  if (flags & XMP_FLAG) WebPDemuxGetChunk(demux, "XMP ", 1, &chunk_iter);
+  // ... (Consume the XMP metadata in 'chunk_iter.chunk').
+  WebPDemuxReleaseChunkIterator(&chunk_iter);
+  WebPDemuxDelete(demux);
+*/
 
 #ifndef WEBP_WEBP_DEMUX_H_
 #define WEBP_WEBP_DEMUX_H_
 
 #include "./mux_types.h"
 
-#if defined(__cplusplus) || defined(c_plusplus)
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -94,6 +95,10 @@ static WEBP_INLINE WebPDemuxer* WebPDemux(const WebPData* data) {
 // If 'state' is non-NULL it will be set to indicate the status of the demuxer.
 // Returns NULL in case of error or if there isn't enough data to start parsing;
 // and a WebPDemuxer object on successful parse.
+// Note that WebPDemuxer keeps internal pointers to 'data' memory segment.
+// If this data is volatile, the demuxer object should be deleted (by calling
+// WebPDemuxDelete()) and WebPDemuxPartial() called again on the new data.
+// This is usually an inexpensive operation.
 static WEBP_INLINE WebPDemuxer* WebPDemuxPartial(
     const WebPData* data, WebPDemuxState* state) {
   return WebPDemuxInternal(data, 1, state, WEBP_DEMUX_ABI_VERSION);
@@ -140,14 +145,15 @@ struct WebPIterator {
   WebPData fragment;  // The frame or fragment given by 'frame_num' and
                       // 'fragment_num'.
   int has_alpha;      // True if the frame or fragment contains transparency.
+  WebPMuxAnimBlend blend_method;  // Blend operation for the frame.
 
-  uint32_t pad[3];         // padding for later use.
+  uint32_t pad[2];         // padding for later use.
   void* private_;          // for internal use only.
 };
 
 // Retrieves frame 'frame_number' from 'dmux'.
 // 'iter->fragment' points to the first fragment on return from this function.
-// Individual fragments may be extracted using WebPDemuxSetFragment().
+// Individual fragments may be extracted using WebPDemuxSelectFragment().
 // Setting 'frame_number' equal to 0 will return the last frame of the image.
 // Returns false if 'dmux' is NULL or frame 'frame_number' is not present.
 // Call WebPDemuxReleaseIterator() when use of the iterator is complete.
@@ -211,7 +217,7 @@ WEBP_EXTERN(void) WebPDemuxReleaseChunkIterator(WebPChunkIterator* iter);
 
 //------------------------------------------------------------------------------
 
-#if defined(__cplusplus) || defined(c_plusplus)
+#ifdef __cplusplus
 }    // extern "C"
 #endif
 

@@ -16,10 +16,6 @@
 #include "./muxi.h"
 #include "../utils/utils.h"
 
-#if defined(__cplusplus) || defined(c_plusplus)
-extern "C" {
-#endif
-
 //------------------------------------------------------------------------------
 // Life of a mux object.
 
@@ -116,7 +112,9 @@ static WebPMuxError CreateFrameFragmentData(
     PutLE24(frame_frgm_bytes + 6, width - 1);
     PutLE24(frame_frgm_bytes + 9, height - 1);
     PutLE24(frame_frgm_bytes + 12, info->duration);
-    frame_frgm_bytes[15] = (info->dispose_method & 1);
+    frame_frgm_bytes[15] =
+        (info->blend_method == WEBP_MUX_NO_BLEND ? 2 : 0) |
+        (info->dispose_method == WEBP_MUX_DISPOSE_BACKGROUND ? 1 : 0);
   }
 
   frame_frgm->bytes = frame_frgm_bytes;
@@ -310,7 +308,8 @@ WebPMuxError WebPMuxPushFrame(WebPMux* mux, const WebPMuxFrameInfo* frame,
     tmp.y_offset &= ~1;
     if (!is_frame) {  // Reset unused values.
       tmp.duration = 1;
-      tmp.dispose_method = 0;
+      tmp.dispose_method = WEBP_MUX_DISPOSE_NONE;
+      tmp.blend_method = WEBP_MUX_BLEND;
     }
     if (tmp.x_offset < 0 || tmp.x_offset >= MAX_POSITION_OFFSET ||
         tmp.y_offset < 0 || tmp.y_offset >= MAX_POSITION_OFFSET ||
@@ -400,16 +399,18 @@ static WebPMuxError GetImageInfo(const WebPMuxImage* const wpi,
                                  int* const duration,
                                  int* const width, int* const height) {
   const WebPChunk* const frame_frgm_chunk = wpi->header_;
+  WebPMuxError err;
+  assert(wpi != NULL);
+  assert(frame_frgm_chunk != NULL);
 
   // Get offsets and duration from ANMF/FRGM chunk.
-  const WebPMuxError err =
-      GetFrameFragmentInfo(frame_frgm_chunk, x_offset, y_offset, duration);
+  err = GetFrameFragmentInfo(frame_frgm_chunk, x_offset, y_offset, duration);
   if (err != WEBP_MUX_OK) return err;
 
   // Get width and height from VP8/VP8L chunk.
   if (width != NULL) *width = wpi->width_;
   if (height != NULL) *height = wpi->height_;
-  return 1;
+  return WEBP_MUX_OK;
 }
 
 static WebPMuxError GetImageCanvasWidthHeight(
@@ -423,10 +424,12 @@ static WebPMuxError GetImageCanvasWidthHeight(
   assert(wpi != NULL);
   assert(wpi->img_ != NULL);
 
-  if (wpi->next_) {
+  if (wpi->next_ != NULL) {
     int max_x = 0;
     int max_y = 0;
     int64_t image_area = 0;
+    // if we have a chain of wpi's, header_ is necessarily set
+    assert(wpi->header_ != NULL);
     // Aggregate the bounding box for animation frames & fragmented images.
     for (; wpi != NULL; wpi = wpi->next_) {
       int x_offset = 0, y_offset = 0, duration = 0, w = 0, h = 0;
@@ -647,6 +650,3 @@ WebPMuxError WebPMuxAssemble(WebPMux* mux, WebPData* assembled_data) {
 
 //------------------------------------------------------------------------------
 
-#if defined(__cplusplus) || defined(c_plusplus)
-}    // extern "C"
-#endif

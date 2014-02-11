@@ -16,10 +16,6 @@
 #include "./muxi.h"
 #include "../utils/utils.h"
 
-#if defined(__cplusplus) || defined(c_plusplus)
-extern "C" {
-#endif
-
 //------------------------------------------------------------------------------
 // Helper method(s).
 
@@ -426,6 +422,8 @@ static WebPMuxError MuxGetImageInternal(const WebPMuxImage* const wpi,
   info->x_offset = 0;
   info->y_offset = 0;
   info->duration = 1;
+  info->dispose_method = WEBP_MUX_DISPOSE_NONE;
+  info->blend_method = WEBP_MUX_BLEND;
   // Extract data for related fields.
   info->id = ChunkGetIdFromTag(wpi->img_->tag_);
   return SynthesizeBitstream(wpi, &info->bitstream);
@@ -446,10 +444,17 @@ static WebPMuxError MuxGetFrameFragmentInternal(const WebPMuxImage* const wpi,
   // Extract info.
   frame->x_offset = 2 * GetLE24(frame_frgm_data->bytes + 0);
   frame->y_offset = 2 * GetLE24(frame_frgm_data->bytes + 3);
-  frame->duration = is_frame ? GetLE24(frame_frgm_data->bytes + 12) : 1;
-  frame->dispose_method =
-      is_frame ? (WebPMuxAnimDispose)(frame_frgm_data->bytes[15] & 1)
-               : WEBP_MUX_DISPOSE_NONE;
+  if (is_frame) {
+    const uint8_t bits = frame_frgm_data->bytes[15];
+    frame->duration = GetLE24(frame_frgm_data->bytes + 12);
+    frame->dispose_method =
+        (bits & 1) ? WEBP_MUX_DISPOSE_BACKGROUND : WEBP_MUX_DISPOSE_NONE;
+    frame->blend_method = (bits & 2) ? WEBP_MUX_NO_BLEND : WEBP_MUX_BLEND;
+  } else {  // Defaults for unused values.
+    frame->duration = 1;
+    frame->dispose_method = WEBP_MUX_DISPOSE_NONE;
+    frame->blend_method = WEBP_MUX_BLEND;
+  }
   frame->id = ChunkGetIdFromTag(wpi->header_->tag_);
   return SynthesizeBitstream(wpi, &frame->bitstream);
 }
@@ -496,7 +501,7 @@ WebPMuxError WebPMuxGetAnimationParams(const WebPMux* mux,
 static CHUNK_INDEX ChunkGetIndexFromId(WebPChunkId id) {
   int i;
   for (i = 0; kChunks[i].id != WEBP_CHUNK_NIL; ++i) {
-    if (id == kChunks[i].id) return i;
+    if (id == kChunks[i].id) return (CHUNK_INDEX)i;
   }
   return IDX_NIL;
 }
@@ -533,6 +538,3 @@ WebPMuxError WebPMuxNumChunks(const WebPMux* mux,
 
 //------------------------------------------------------------------------------
 
-#if defined(__cplusplus) || defined(c_plusplus)
-}    // extern "C"
-#endif

@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(WEBP_HAVE_GL)
+
 #if defined(HAVE_GLUT_GLUT_H)
 #include <GLUT/glut.h>
 #else
@@ -57,15 +59,11 @@ static struct {
 
   const char* file_name;
   WebPData data;
-  WebPDecoderConfig* config;
+  WebPDecoderConfig config;
   const WebPDecBuffer* pic;
   WebPDemuxer* dmux;
-  WebPIterator frameiter;
-  struct {
-    int width, height;
-    int x_offset, y_offset;
-    enum WebPMuxAnimDispose dispose_method;
-  } prev_frame;
+  WebPIterator curr_frame;
+  WebPIterator prev_frame;
   WebPChunkIterator iccp;
 } kParams;
 
@@ -77,7 +75,8 @@ static void ClearPreviousPic(void) {
 static void ClearParams(void) {
   ClearPreviousPic();
   WebPDataClear(&kParams.data);
-  WebPDemuxReleaseIterator(&kParams.frameiter);
+  WebPDemuxReleaseIterator(&kParams.curr_frame);
+  WebPDemuxReleaseIterator(&kParams.prev_frame);
   WebPDemuxReleaseChunkIterator(&kParams.iccp);
   WebPDemuxDelete(kParams.dmux);
   kParams.dmux = NULL;
@@ -147,25 +146,25 @@ static int ApplyColorProfile(const WebPData* const profile,
 //------------------------------------------------------------------------------
 // File decoding
 
-static int Decode(void) {   // Fills kParams.frameiter
-  const WebPIterator* const iter = &kParams.frameiter;
-  WebPDecoderConfig* const config = kParams.config;
+static int Decode(void) {   // Fills kParams.curr_frame
+  const WebPIterator* const curr = &kParams.curr_frame;
+  WebPDecoderConfig* const config = &kParams.config;
   WebPDecBuffer* const output_buffer = &config->output;
   int ok = 0;
 
   ClearPreviousPic();
   output_buffer->colorspace = MODE_RGBA;
-  ok = (WebPDecode(iter->fragment.bytes, iter->fragment.size,
+  ok = (WebPDecode(curr->fragment.bytes, curr->fragment.size,
                    config) == VP8_STATUS_OK);
   if (!ok) {
-    fprintf(stderr, "Decoding of frame #%d failed!\n", iter->frame_num);
+    fprintf(stderr, "Decoding of frame #%d failed!\n", curr->frame_num);
   } else {
     kParams.pic = output_buffer;
     if (kParams.use_color_profile) {
       ok = ApplyColorProfile(&kParams.iccp.chunk, output_buffer);
       if (!ok) {
         fprintf(stderr, "Applying color profile to frame #%d failed!\n",
-                iter->frame_num);
+                curr->frame_num);
       }
     }
   }
@@ -176,10 +175,10 @@ static void decode_callback(int what) {
   if (what == 0 && !kParams.done) {
     int duration = 0;
     if (kParams.dmux != NULL) {
-      WebPIterator* const iter = &kParams.frameiter;
-      if (!WebPDemuxNextFrame(iter)) {
-        WebPDemuxReleaseIterator(iter);
-        if (WebPDemuxGetFrame(kParams.dmux, 1, iter)) {
+      WebPIterator* const curr = &kParams.curr_frame;
+      if (!WebPDemuxNextFrame(curr)) {
+        WebPDemuxReleaseIterator(curr);
+        if (WebPDemuxGetFrame(kParams.dmux, 1, curr)) {
           --kParams.loop_count;
           kParams.done = (kParams.loop_count == 0);
         } else {
@@ -188,7 +187,7 @@ static void decode_callback(int what) {
           return;
         }
       }
-      duration = iter->duration;
+      duration = curr->duration;
     }
     if (!Decode()) {
       kParams.decoding_error = 1;
@@ -281,40 +280,45 @@ static void DrawCheckerBoard(void) {
 
 static void HandleDisplay(void) {
   const WebPDecBuffer* const pic = kParams.pic;
-  const WebPIterator* const iter = &kParams.frameiter;
+  const WebPIterator* const curr = &kParams.curr_frame;
+  WebPIterator* const prev = &kParams.prev_frame;
   GLfloat xoff, yoff;
   if (pic == NULL) return;
   glPushMatrix();
   glPixelZoom(1, -1);
-  xoff = (GLfloat)(2. * iter->x_offset / kParams.canvas_width);
-  yoff = (GLfloat)(2. * iter->y_offset / kParams.canvas_height);
+  xoff = (GLfloat)(2. * curr->x_offset / kParams.canvas_width);
+  yoff = (GLfloat)(2. * curr->y_offset / kParams.canvas_height);
   glRasterPos2f(-1.f + xoff, 1.f - yoff);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glPixelStorei(GL_UNPACK_ROW_LENGTH, pic->u.RGBA.stride / 4);
 
-  if (kParams.prev_frame.dispose_method == WEBP_MUX_DISPOSE_BACKGROUND) {
+  if (prev->dispose_method == WEBP_MUX_DISPOSE_BACKGROUND ||
+      curr->blend_method == WEBP_MUX_NO_BLEND) {
     // TODO(later): these offsets and those above should factor in window size.
     //              they will be incorrect if the window is resized.
     // glScissor() takes window coordinates (0,0 at bottom left).
-    const int window_x = kParams.prev_frame.x_offset;
-    const int window_y = kParams.canvas_height -
-                         kParams.prev_frame.y_offset -
-                         kParams.prev_frame.height;
+    int window_x, window_y;
+    if (prev->dispose_method == WEBP_MUX_DISPOSE_BACKGROUND) {
+      // Clear the previous frame rectangle.
+      window_x = prev->x_offset;
+      window_y = kParams.canvas_height - prev->y_offset - prev->height;
+    } else {  // curr->blend_method == WEBP_MUX_NO_BLEND.
+      // We simulate no-blending behavior by first clearing the current frame
+      // rectangle (to a checker-board) and then alpha-blending against it.
+      window_x = curr->x_offset;
+      window_y = kParams.canvas_height - curr->y_offset - curr->height;
+    }
     glEnable(GL_SCISSOR_TEST);
-    // Only updated the requested area, not the whole canvas.
-    glScissor(window_x, window_y,
-              kParams.prev_frame.width, kParams.prev_frame.height);
+    // Only update the requested area, not the whole canvas.
+    glScissor(window_x, window_y, prev->width, prev->height);
 
     glClear(GL_COLOR_BUFFER_BIT);  // use clear color
     DrawCheckerBoard();
 
     glDisable(GL_SCISSOR_TEST);
   }
-  kParams.prev_frame.width = iter->width;
-  kParams.prev_frame.height = iter->height;
-  kParams.prev_frame.x_offset = iter->x_offset;
-  kParams.prev_frame.y_offset = iter->y_offset;
-  kParams.prev_frame.dispose_method = iter->dispose_method;
+
+  *prev = *curr;
 
   glDrawPixels(pic->width, pic->height,
                GL_RGBA, GL_UNSIGNED_BYTE,
@@ -330,9 +334,9 @@ static void HandleDisplay(void) {
     glColor4f(0.90f, 0.0f, 0.90f, 1.0f);
     glRasterPos2f(-0.95f, 0.80f);
     PrintString(tmp);
-    if (iter->x_offset != 0 || iter->y_offset != 0) {
+    if (curr->x_offset != 0 || curr->y_offset != 0) {
       snprintf(tmp, sizeof(tmp), " (offset:%d,%d)",
-               iter->x_offset, iter->y_offset);
+               curr->x_offset, curr->y_offset);
       glRasterPos2f(-0.95f, 0.70f);
       PrintString(tmp);
     }
@@ -372,6 +376,7 @@ static void Help(void) {
          "  -noicc ....... don't use the icc profile if present.\n"
          "  -nofancy ..... don't use the fancy YUV420 upscaler.\n"
          "  -nofilter .... disable in-loop filtering.\n"
+         "  -dither <int>  dithering strength (0..100). Default=50.\n"
          "  -mt .......... use multi-threading.\n"
          "  -info ........ print info.\n"
          "  -h     ....... this help message.\n"
@@ -384,14 +389,16 @@ static void Help(void) {
 }
 
 int main(int argc, char *argv[]) {
-  WebPDecoderConfig config;
   int c;
+  WebPDecoderConfig* const config = &kParams.config;
+  WebPIterator* const curr = &kParams.curr_frame;
+  WebPIterator* const prev = &kParams.prev_frame;
 
-  if (!WebPInitDecoderConfig(&config)) {
+  if (!WebPInitDecoderConfig(config)) {
     fprintf(stderr, "Library version mismatch!\n");
     return -1;
   }
-  kParams.config = &config;
+  config->options.dithering_strength = 50;
   kParams.use_color_profile = 1;
 
   for (c = 1; c < argc; ++c) {
@@ -401,9 +408,11 @@ int main(int argc, char *argv[]) {
     } else if (!strcmp(argv[c], "-noicc")) {
       kParams.use_color_profile = 0;
     } else if (!strcmp(argv[c], "-nofancy")) {
-      config.options.no_fancy_upsampling = 1;
+      config->options.no_fancy_upsampling = 1;
     } else if (!strcmp(argv[c], "-nofilter")) {
-      config.options.bypass_filtering = 1;
+      config->options.bypass_filtering = 1;
+    } else if (!strcmp(argv[c], "-dither") && c + 1 < argc) {
+      config->options.dithering_strength = strtol(argv[++c], NULL, 0);
     } else if (!strcmp(argv[c], "-info")) {
       kParams.print_info = 1;
     } else if (!strcmp(argv[c], "-version")) {
@@ -415,7 +424,10 @@ int main(int argc, char *argv[]) {
              (dmux_version >> 8) & 0xff, dmux_version & 0xff);
       return 0;
     } else if (!strcmp(argv[c], "-mt")) {
-      config.options.use_threads = 1;
+      config->options.use_threads = 1;
+    } else if (!strcmp(argv[c], "--")) {
+      if (c < argc - 1) kParams.file_name = argv[++c];
+      break;
     } else if (argv[c][0] == '-') {
       printf("Unknown option '%s'\n", argv[c]);
       Help();
@@ -457,10 +469,10 @@ int main(int argc, char *argv[]) {
     printf("Canvas: %d x %d\n", kParams.canvas_width, kParams.canvas_height);
   }
 
-  kParams.prev_frame.width = kParams.canvas_width;
-  kParams.prev_frame.height = kParams.canvas_height;
-  kParams.prev_frame.x_offset = kParams.prev_frame.y_offset = 0;
-  kParams.prev_frame.dispose_method = WEBP_MUX_DISPOSE_BACKGROUND;
+  prev->width = kParams.canvas_width;
+  prev->height = kParams.canvas_height;
+  prev->x_offset = prev->y_offset = 0;
+  prev->dispose_method = WEBP_MUX_DISPOSE_BACKGROUND;
 
   memset(&kParams.iccp, 0, sizeof(kParams.iccp));
   kParams.has_color_profile =
@@ -476,20 +488,20 @@ int main(int argc, char *argv[]) {
 #endif
   }
 
-  if (!WebPDemuxGetFrame(kParams.dmux, 1, &kParams.frameiter)) goto Error;
+  if (!WebPDemuxGetFrame(kParams.dmux, 1, curr)) goto Error;
 
-  kParams.has_animation = (kParams.frameiter.num_frames > 1);
+  kParams.has_animation = (curr->num_frames > 1);
   kParams.loop_count = (int)WebPDemuxGetI(kParams.dmux, WEBP_FF_LOOP_COUNT);
   kParams.bg_color = WebPDemuxGetI(kParams.dmux, WEBP_FF_BACKGROUND_COLOR);
   printf("VP8X: Found %d images in file (loop count = %d)\n",
-         kParams.frameiter.num_frames, kParams.loop_count);
+         curr->num_frames, kParams.loop_count);
 
   // Decode first frame
   if (!Decode()) goto Error;
 
   // Position iterator to last frame. Next call to HandleDisplay will wrap over.
   // We take this into account by bumping up loop_count.
-  WebPDemuxGetFrame(kParams.dmux, 0, &kParams.frameiter);
+  WebPDemuxGetFrame(kParams.dmux, 0, curr);
   if (kParams.loop_count) ++kParams.loop_count;
 
   // Start display (and timer)
@@ -510,5 +522,15 @@ int main(int argc, char *argv[]) {
   ClearParams();
   return -1;
 }
+
+#else   // !WEBP_HAVE_GL
+
+int main(int argc, const char *argv[]) {
+  fprintf(stderr, "OpenGL support not enabled in %s.\n", argv[0]);
+  (void)argc;
+  return 0;
+}
+
+#endif
 
 //------------------------------------------------------------------------------

@@ -16,11 +16,11 @@
 
 #include "./types.h"
 
-#if defined(__cplusplus) || defined(c_plusplus)
+#ifdef __cplusplus
 extern "C" {
 #endif
 
-#define WEBP_ENCODER_ABI_VERSION 0x0201    // MAJOR(8b) + MINOR(8b)
+#define WEBP_ENCODER_ABI_VERSION 0x0202    // MAJOR(8b) + MINOR(8b)
 
 // Note: forward declaring enumerations is not allowed in (strict) C and C++,
 // the types are left here for reference.
@@ -117,7 +117,8 @@ struct WebPConfig {
 
   int show_compressed;    // if true, export the compressed picture back.
                           // In-loop filtering is not applied.
-  int preprocessing;      // preprocessing filter (0=none, 1=segment-smooth)
+  int preprocessing;      // preprocessing filter:
+                          // 0=none, 1=segment-smooth, 2=pseudo-random dithering
   int partitions;         // log2(number of token partitions) in [0..3]. Default
                           // is set to 0 for easier progressive decoding.
   int partition_limit;    // quality degradation allowed to fit the 512k limit
@@ -443,6 +444,13 @@ WEBP_EXTERN(int) WebPPictureImportBGRX(
 WEBP_EXTERN(int) WebPPictureARGBToYUVA(WebPPicture* picture,
                                        WebPEncCSP colorspace);
 
+// Same as WebPPictureARGBToYUVA(), but the conversion is done using
+// pseudo-random dithering with a strength 'dithering' between
+// 0.0 (no dithering) and 1.0 (maximum dithering). This is useful
+// for photographic picture.
+WEBP_EXTERN(int) WebPPictureARGBToYUVADithered(
+    WebPPicture* picture, WebPEncCSP colorspace, float dithering);
+
 // Converts picture->yuv to picture->argb and sets picture->use_argb to true.
 // The input format must be YUV_420 or YUV_420A.
 // Note that the use of this method is discouraged if one has access to the
@@ -483,7 +491,7 @@ WEBP_EXTERN(int) WebPEncode(const WebPConfig* config, WebPPicture* picture);
 
 //------------------------------------------------------------------------------
 
-#if defined(__cplusplus) || defined(c_plusplus)
+#ifdef __cplusplus
 }    // extern "C"
 #endif
 

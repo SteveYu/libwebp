@@ -32,9 +32,15 @@
 #define COBJMACROS
 #define _WIN32_IE 0x500  // Workaround bug in shlwapi.h when compiling C++
                          // code with COBJMACROS.
+#include <ole2.h>  // CreateStreamOnHGlobal()
 #include <shlwapi.h>
 #include <windows.h>
 #include <wincodec.h>
+#endif
+
+#if defined(_WIN32)
+#include <fcntl.h>   // for _O_BINARY
+#include <io.h>      // for _setmode()
 #endif
 
 #include "webp/decode.h"
@@ -43,13 +49,13 @@
 
 static int verbose = 0;
 #ifndef WEBP_DLL
-#if defined(__cplusplus) || defined(c_plusplus)
+#ifdef __cplusplus
 extern "C" {
 #endif
 
 extern void* VP8GetCPUInfo;   // opaque forward declaration.
 
-#if defined(__cplusplus) || defined(c_plusplus)
+#ifdef __cplusplus
 }    // extern "C"
 #endif
 #endif  // WEBP_DLL
@@ -84,9 +90,15 @@ typedef enum {
 #define MAKE_REFGUID(x) &(x)
 #endif
 
-static HRESULT CreateOutputStream(const char* out_file_name, IStream** stream) {
+static HRESULT CreateOutputStream(const char* out_file_name,
+                                  int write_to_mem, IStream** stream) {
   HRESULT hr = S_OK;
-  IFS(SHCreateStreamOnFileA(out_file_name, STGM_WRITE | STGM_CREATE, stream));
+  if (write_to_mem) {
+    // Output to a memory buffer. This is freed when 'stream' is released.
+    IFS(CreateStreamOnHGlobal(NULL, TRUE, stream));
+  } else {
+    IFS(SHCreateStreamOnFileA(out_file_name, STGM_WRITE | STGM_CREATE, stream));
+  }
   if (FAILED(hr)) {
     fprintf(stderr, "Error opening output file %s (%08lx)\n",
             out_file_name, hr);
@@ -94,8 +106,9 @@ static HRESULT CreateOutputStream(const char* out_file_name, IStream** stream) {
   return hr;
 }
 
-static HRESULT WriteUsingWIC(const char* out_file_name, REFGUID container_guid,
-                             unsigned char* rgb, int stride,
+static HRESULT WriteUsingWIC(const char* out_file_name, int use_stdout,
+                             REFGUID container_guid,
+                             uint8_t* rgb, int stride,
                              uint32_t width, uint32_t height, int has_alpha) {
   HRESULT hr = S_OK;
   IWICImagingFactory* factory = NULL;
@@ -116,7 +129,7 @@ static HRESULT WriteUsingWIC(const char* out_file_name, REFGUID container_guid,
             "Windows XP SP3 or newer?). PNG support not available. "
             "Use -ppm or -pgm for available PPM and PGM formats.\n");
   }
-  IFS(CreateOutputStream(out_file_name, &stream));
+  IFS(CreateOutputStream(out_file_name, use_stdout, &stream));
   IFS(IWICImagingFactory_CreateEncoder(factory, container_guid, NULL,
                                        &encoder));
   IFS(IWICBitmapEncoder_Initialize(encoder, stream,
@@ -130,6 +143,28 @@ static HRESULT WriteUsingWIC(const char* out_file_name, REFGUID container_guid,
   IFS(IWICBitmapFrameEncode_Commit(frame));
   IFS(IWICBitmapEncoder_Commit(encoder));
 
+  if (SUCCEEDED(hr) && use_stdout) {
+    HGLOBAL image;
+    IFS(GetHGlobalFromStream(stream, &image));
+    if (SUCCEEDED(hr)) {
+      HANDLE std_output = GetStdHandle(STD_OUTPUT_HANDLE);
+      DWORD mode;
+      const BOOL update_mode = GetConsoleMode(std_output, &mode);
+      const void* const image_mem = GlobalLock(image);
+      DWORD bytes_written = 0;
+
+      // Clear output processing if necessary, then output the image.
+      if (update_mode) SetConsoleMode(std_output, 0);
+      if (!WriteFile(std_output, image_mem, (DWORD)GlobalSize(image),
+                     &bytes_written, NULL) ||
+          bytes_written != GlobalSize(image)) {
+        hr = E_FAIL;
+      }
+      if (update_mode) SetConsoleMode(std_output, mode);
+      GlobalUnlock(image);
+    }
+  }
+
   if (frame != NULL) IUnknown_Release(frame);
   if (encoder != NULL) IUnknown_Release(encoder);
   if (factory != NULL) IUnknown_Release(factory);
@@ -137,21 +172,21 @@ static HRESULT WriteUsingWIC(const char* out_file_name, REFGUID container_guid,
   return hr;
 }
 
-static int WritePNG(const char* out_file_name,
+static int WritePNG(const char* out_file_name, int use_stdout,
                     const WebPDecBuffer* const buffer) {
   const uint32_t width = buffer->width;
   const uint32_t height = buffer->height;
-  unsigned char* const rgb = buffer->u.RGBA.rgba;
+  uint8_t* const rgb = buffer->u.RGBA.rgba;
   const int stride = buffer->u.RGBA.stride;
   const int has_alpha = (buffer->colorspace == MODE_BGRA);
 
-  return SUCCEEDED(WriteUsingWIC(out_file_name,
+  return SUCCEEDED(WriteUsingWIC(out_file_name, use_stdout,
                                  MAKE_REFGUID(GUID_ContainerFormatPng),
                                  rgb, stride, width, height, has_alpha));
 }
 
 #elif defined(WEBP_HAVE_PNG)    // !HAVE_WINCODEC_H
-static void PNGAPI error_function(png_structp png, png_const_charp dummy) {
+static void PNGAPI PNGErrorFunction(png_structp png, png_const_charp dummy) {
   (void)dummy;  // remove variable-unused warning
   longjmp(png_jmpbuf(png), 1);
 }
@@ -159,7 +194,7 @@ static void PNGAPI error_function(png_structp png, png_const_charp dummy) {
 static int WritePNG(FILE* out_file, const WebPDecBuffer* const buffer) {
   const uint32_t width = buffer->width;
   const uint32_t height = buffer->height;
-  unsigned char* const rgb = buffer->u.RGBA.rgba;
+  uint8_t* const rgb = buffer->u.RGBA.rgba;
   const int stride = buffer->u.RGBA.stride;
   const int has_alpha = (buffer->colorspace == MODE_RGBA);
   png_structp png;
@@ -167,7 +202,7 @@ static int WritePNG(FILE* out_file, const WebPDecBuffer* const buffer) {
   png_uint_32 y;
 
   png = png_create_write_struct(PNG_LIBPNG_VER_STRING,
-                                NULL, error_function, NULL);
+                                NULL, PNGErrorFunction, NULL);
   if (png == NULL) {
     return 0;
   }
@@ -208,7 +243,7 @@ static int WritePNG(FILE* out_file, const WebPDecBuffer* const buffer) {
 static int WritePPM(FILE* fout, const WebPDecBuffer* const buffer, int alpha) {
   const uint32_t width = buffer->width;
   const uint32_t height = buffer->height;
-  const unsigned char* const rgb = buffer->u.RGBA.rgba;
+  const uint8_t* const rgb = buffer->u.RGBA.rgba;
   const int stride = buffer->u.RGBA.stride;
   const size_t bytes_per_px = alpha ? 4 : 3;
   uint32_t y;
@@ -370,7 +405,7 @@ static int WriteTIFF(FILE* fout, const WebPDecBuffer* const buffer) {
 static int WriteAlphaPlane(FILE* fout, const WebPDecBuffer* const buffer) {
   const uint32_t width = buffer->width;
   const uint32_t height = buffer->height;
-  const unsigned char* const a = buffer->u.YUVA.a;
+  const uint8_t* const a = buffer->u.YUVA.a;
   const int a_stride = buffer->u.YUVA.a_stride;
   uint32_t y;
   assert(a != NULL);
@@ -431,30 +466,40 @@ static int WritePGMOrYUV(FILE* fout, const WebPDecBuffer* const buffer,
   return ok;
 }
 
-static void SaveOutput(const WebPDecBuffer* const buffer,
-                       OutputFileFormat format, const char* const out_file) {
+static int SaveOutput(const WebPDecBuffer* const buffer,
+                      OutputFileFormat format, const char* const out_file) {
   FILE* fout = NULL;
   int needs_open_file = 1;
+  const int use_stdout = !strcmp(out_file, "-");
   int ok = 1;
   Stopwatch stop_watch;
 
-  if (verbose)
-    StopwatchReadAndReset(&stop_watch);
+  if (verbose) {
+    StopwatchReset(&stop_watch);
+  }
 
 #ifdef HAVE_WINCODEC_H
   needs_open_file = (format != PNG);
 #endif
+
+#if defined(_WIN32)
+  if (use_stdout && _setmode(_fileno(stdout), _O_BINARY) == -1) {
+    fprintf(stderr, "Failed to reopen stdout in O_BINARY mode.\n");
+    return -1;
+  }
+#endif
+
   if (needs_open_file) {
-    fout = fopen(out_file, "wb");
-    if (!fout) {
+    fout = use_stdout ? stdout : fopen(out_file, "wb");
+    if (fout == NULL) {
       fprintf(stderr, "Error opening output file %s\n", out_file);
-      return;
+      return 0;
     }
   }
 
   if (format == PNG) {
 #ifdef HAVE_WINCODEC_H
-    ok &= WritePNG(out_file, buffer);
+    ok &= WritePNG(out_file, use_stdout, buffer);
 #else
     ok &= WritePNG(fout, buffer);
 #endif
@@ -471,18 +516,27 @@ static void SaveOutput(const WebPDecBuffer* const buffer,
   } else if (format == ALPHA_PLANE_ONLY) {
     ok &= WriteAlphaPlane(fout, buffer);
   }
-  if (fout) {
+  if (fout != NULL && fout != stdout) {
     fclose(fout);
   }
   if (ok) {
-    printf("Saved file %s\n", out_file);
+    if (use_stdout) {
+      fprintf(stderr, "Saved to stdout\n");
+    } else {
+      fprintf(stderr, "Saved file %s\n", out_file);
+    }
     if (verbose) {
       const double write_time = StopwatchReadAndReset(&stop_watch);
-      printf("Time to write output: %.3fs\n", write_time);
+      fprintf(stderr, "Time to write output: %.3fs\n", write_time);
     }
   } else {
-    fprintf(stderr, "Error writing file %s !!\n", out_file);
+    if (use_stdout) {
+      fprintf(stderr, "Error writing to stdout !!\n");
+    } else {
+      fprintf(stderr, "Error writing file %s !!\n", out_file);
+    }
   }
+  return ok;
 }
 
 static void Help(void) {
@@ -501,10 +555,13 @@ static void Help(void) {
          "  -version  .... print version number and exit.\n"
          "  -nofancy ..... don't use the fancy YUV420 upscaler.\n"
          "  -nofilter .... disable in-loop filtering.\n"
+         "  -nodither .... disable dithering.\n"
+         "  -dither <d> .. dithering strength (in 0..100)\n"
          "  -mt .......... use multi-threading\n"
          "  -crop <x> <y> <w> <h> ... crop output with the given rectangle\n"
          "  -scale <w> <h> .......... scale the output (*after* any cropping)\n"
          "  -alpha ....... only save the alpha plane.\n"
+         "  -incremental . use incremental decoding (useful for tests)\n"
          "  -h     ....... this help message.\n"
          "  -v     ....... verbose (e.g. print encoding/decoding times)\n"
 #ifndef WEBP_DLL
@@ -518,7 +575,12 @@ static const char* const kStatusMessages[] = {
   "UNSUPPORTED_FEATURE", "SUSPENDED", "USER_ABORT", "NOT_ENOUGH_DATA"
 };
 
+static const char* const kFormatType[] = {
+  "unspecified", "lossy", "lossless"
+};
+
 int main(int argc, const char *argv[]) {
+  int ok = 0;
   const char *in_file = NULL;
   const char *out_file = NULL;
 
@@ -526,6 +588,7 @@ int main(int argc, const char *argv[]) {
   WebPDecBuffer* const output_buffer = &config.output;
   WebPBitstreamFeatures* const bitstream = &config.input;
   OutputFileFormat format = PNG;
+  int incremental = 0;
   int c;
 
   if (!WebPInitDecoderConfig(&config)) {
@@ -564,6 +627,10 @@ int main(int argc, const char *argv[]) {
       format = YUV;
     } else if (!strcmp(argv[c], "-mt")) {
       config.options.use_threads = 1;
+    } else if (!strcmp(argv[c], "-nodither")) {
+      config.options.dithering_strength = 0;
+    } else if (!strcmp(argv[c], "-dither") && c < argc - 1) {
+      config.options.dithering_strength = strtol(argv[++c], NULL, 0);
     } else if (!strcmp(argv[c], "-crop") && c < argc - 4) {
       config.options.use_cropping = 1;
       config.options.crop_left   = strtol(argv[++c], NULL, 0);
@@ -580,6 +647,11 @@ int main(int argc, const char *argv[]) {
     } else if (!strcmp(argv[c], "-noasm")) {
       VP8GetCPUInfo = NULL;
 #endif
+    } else if (!strcmp(argv[c], "-incremental")) {
+      incremental = 1;
+    } else if (!strcmp(argv[c], "--")) {
+      if (c < argc - 1) in_file = argv[++c];
+      break;
     } else if (argv[c][0] == '-') {
       fprintf(stderr, "Unknown option '%s'\n", argv[c]);
       Help();
@@ -598,14 +670,14 @@ int main(int argc, const char *argv[]) {
   {
     Stopwatch stop_watch;
     VP8StatusCode status = VP8_STATUS_OK;
-    int ok;
     size_t data_size = 0;
     const uint8_t* data = NULL;
 
     if (!ExUtilReadFile(in_file, &data, &data_size)) return -1;
 
-    if (verbose)
-      StopwatchReadAndReset(&stop_watch);
+    if (verbose) {
+      StopwatchReset(&stop_watch);
+    }
 
     status = WebPGetFeatures(data, data_size, bitstream);
     if (status != VP8_STATUS_OK) {
@@ -651,11 +723,25 @@ int main(int argc, const char *argv[]) {
         free((void*)data);
         return -1;
     }
-    status = WebPDecode(data, data_size, &config);
+
+    // Decoding call.
+    if (!incremental) {
+      status = WebPDecode(data, data_size, &config);
+    } else {
+      WebPIDecoder* const idec = WebPIDecode(data, data_size, &config);
+      if (idec == NULL) {
+        fprintf(stderr, "Failed during WebPINewDecoder().\n");
+        status = VP8_STATUS_OUT_OF_MEMORY;
+        goto end;
+      } else {
+        status = WebPIUpdate(idec, data, data_size);
+        WebPIDelete(idec);
+      }
+    }
 
     if (verbose) {
       const double decode_time = StopwatchReadAndReset(&stop_watch);
-      printf("Time to decode picture: %.3fs\n", decode_time);
+      fprintf(stderr, "Time to decode picture: %.3fs\n", decode_time);
     }
  end:
     free((void*)data);
@@ -663,24 +749,29 @@ int main(int argc, const char *argv[]) {
     if (!ok) {
       fprintf(stderr, "Decoding of %s failed.\n", in_file);
       fprintf(stderr, "Status: %d (%s)\n", status, kStatusMessages[status]);
-      return -1;
+      goto Exit;
     }
   }
 
-  if (out_file) {
-    printf("Decoded %s. Dimensions: %d x %d%s. Now saving...\n", in_file,
-           output_buffer->width, output_buffer->height,
-           bitstream->has_alpha ? " (with alpha)" : "");
-    SaveOutput(output_buffer, format, out_file);
+  if (out_file != NULL) {
+    fprintf(stderr, "Decoded %s. Dimensions: %d x %d %s. Format: %s. "
+                    "Now saving...\n",
+            in_file, output_buffer->width, output_buffer->height,
+            bitstream->has_alpha ? " (with alpha)" : "",
+            kFormatType[bitstream->format]);
+    ok = SaveOutput(output_buffer, format, out_file);
   } else {
-    printf("File %s can be decoded (dimensions: %d x %d)%s.\n",
-           in_file, output_buffer->width, output_buffer->height,
-           bitstream->has_alpha ? " (with alpha)" : "");
-    printf("Nothing written; use -o flag to save the result as e.g. PNG.\n");
+    fprintf(stderr, "File %s can be decoded "
+                    "(dimensions: %d x %d %s. Format: %s).\n",
+            in_file, output_buffer->width, output_buffer->height,
+            bitstream->has_alpha ? " (with alpha)" : "",
+            kFormatType[bitstream->format]);
+    fprintf(stderr, "Nothing written; "
+                    "use -o flag to save the result as e.g. PNG.\n");
   }
+ Exit:
   WebPFreeDecBuffer(output_buffer);
-
-  return 0;
+  return ok ? 0 : -1;
 }
 
 //------------------------------------------------------------------------------

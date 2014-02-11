@@ -18,10 +18,6 @@
 #include "./webpi.h"
 #include "../webp/mux_types.h"  // ALPHA_FLAG
 
-#if defined(__cplusplus) || defined(c_plusplus)
-extern "C" {
-#endif
-
 //------------------------------------------------------------------------------
 // RIFF layout is:
 //   Offset  tag
@@ -285,6 +281,7 @@ static VP8StatusCode ParseHeadersInternal(const uint8_t* data,
                                           int* const height,
                                           int* const has_alpha,
                                           int* const has_animation,
+                                          int* const format,
                                           WebPHeaderStructure* const headers) {
   int canvas_width = 0;
   int canvas_height = 0;
@@ -292,6 +289,9 @@ static VP8StatusCode ParseHeadersInternal(const uint8_t* data,
   int image_height = 0;
   int found_riff = 0;
   int found_vp8x = 0;
+  int animation_present = 0;
+  int fragments_present = 0;
+
   VP8StatusCode status;
   WebPHeaderStructure hdrs;
 
@@ -312,8 +312,6 @@ static VP8StatusCode ParseHeadersInternal(const uint8_t* data,
   // Skip over VP8X.
   {
     uint32_t flags = 0;
-    int animation_present;
-    int fragments_present;
     status = ParseVP8X(&data, &data_size, &found_vp8x,
                        &canvas_width, &canvas_height, &flags);
     if (status != VP8_STATUS_OK) {
@@ -328,16 +326,21 @@ static VP8StatusCode ParseHeadersInternal(const uint8_t* data,
     }
     if (has_alpha != NULL) *has_alpha = !!(flags & ALPHA_FLAG);
     if (has_animation != NULL) *has_animation = animation_present;
+    if (format != NULL) *format = 0;   // default = undefined
 
+    image_width = canvas_width;
+    image_height = canvas_height;
     if (found_vp8x && (animation_present || fragments_present) &&
         headers == NULL) {
-      if (width != NULL) *width = canvas_width;
-      if (height != NULL) *height = canvas_height;
-      return VP8_STATUS_OK;  // Just return features from VP8X header.
+      status = VP8_STATUS_OK;
+      goto ReturnWidthHeight;  // Just return features from VP8X header.
     }
   }
 
-  if (data_size < TAG_SIZE) return VP8_STATUS_NOT_ENOUGH_DATA;
+  if (data_size < TAG_SIZE) {
+    status = VP8_STATUS_NOT_ENOUGH_DATA;
+    goto ReturnWidthHeight;
+  }
 
   // Skip over optional chunks if data started with "RIFF + VP8X" or "ALPH".
   if ((found_riff && found_vp8x) ||
@@ -345,7 +348,7 @@ static VP8StatusCode ParseHeadersInternal(const uint8_t* data,
     status = ParseOptionalChunks(&data, &data_size, hdrs.riff_size,
                                  &hdrs.alpha_data, &hdrs.alpha_data_size);
     if (status != VP8_STATUS_OK) {
-      return status;  // Found an invalid chunk size / insufficient data.
+      goto ReturnWidthHeight;  // Invalid chunk size / insufficient data.
     }
   }
 
@@ -353,15 +356,20 @@ static VP8StatusCode ParseHeadersInternal(const uint8_t* data,
   status = ParseVP8Header(&data, &data_size, hdrs.riff_size,
                           &hdrs.compressed_size, &hdrs.is_lossless);
   if (status != VP8_STATUS_OK) {
-    return status;  // Wrong VP8/VP8L chunk-header / insufficient data.
+    goto ReturnWidthHeight;  // Wrong VP8/VP8L chunk-header / insufficient data.
   }
   if (hdrs.compressed_size > MAX_CHUNK_PAYLOAD) {
     return VP8_STATUS_BITSTREAM_ERROR;
   }
 
+  if (format != NULL && !(animation_present || fragments_present)) {
+    *format = hdrs.is_lossless ? 2 : 1;
+  }
+
   if (!hdrs.is_lossless) {
     if (data_size < VP8_FRAME_HEADER_SIZE) {
-      return VP8_STATUS_NOT_ENOUGH_DATA;
+      status = VP8_STATUS_NOT_ENOUGH_DATA;
+      goto ReturnWidthHeight;
     }
     // Validates raw VP8 data.
     if (!VP8GetInfo(data, data_size, (uint32_t)hdrs.compressed_size,
@@ -370,7 +378,8 @@ static VP8StatusCode ParseHeadersInternal(const uint8_t* data,
     }
   } else {
     if (data_size < VP8L_FRAME_HEADER_SIZE) {
-      return VP8_STATUS_NOT_ENOUGH_DATA;
+      status = VP8_STATUS_NOT_ENOUGH_DATA;
+      goto ReturnWidthHeight;
     }
     // Validates raw VP8L data.
     if (!VP8LGetInfo(data, data_size, &image_width, &image_height, has_alpha)) {
@@ -383,20 +392,26 @@ static VP8StatusCode ParseHeadersInternal(const uint8_t* data,
       return VP8_STATUS_BITSTREAM_ERROR;
     }
   }
-  if (width != NULL) *width = image_width;
-  if (height != NULL) *height = image_height;
-  if (has_alpha != NULL) {
-    // If the data did not contain a VP8X/VP8L chunk the only definitive way
-    // to set this is by looking for alpha data (from an ALPH chunk).
-    *has_alpha |= (hdrs.alpha_data != NULL);
-  }
   if (headers != NULL) {
     *headers = hdrs;
     headers->offset = data - headers->data;
     assert((uint64_t)(data - headers->data) < MAX_CHUNK_PAYLOAD);
     assert(headers->offset == headers->data_size - data_size);
   }
-  return VP8_STATUS_OK;  // Return features from VP8 header.
+ ReturnWidthHeight:
+  if (status == VP8_STATUS_OK ||
+      (status == VP8_STATUS_NOT_ENOUGH_DATA && found_vp8x && headers == NULL)) {
+    if (has_alpha != NULL) {
+      // If the data did not contain a VP8X/VP8L chunk the only definitive way
+      // to set this is by looking for alpha data (from an ALPH chunk).
+      *has_alpha |= (hdrs.alpha_data != NULL);
+    }
+    if (width != NULL) *width = image_width;
+    if (height != NULL) *height = image_height;
+    return VP8_STATUS_OK;
+  } else {
+    return status;
+  }
 }
 
 VP8StatusCode WebPParseHeaders(WebPHeaderStructure* const headers) {
@@ -405,7 +420,8 @@ VP8StatusCode WebPParseHeaders(WebPHeaderStructure* const headers) {
   assert(headers != NULL);
   // fill out headers, ignore width/height/has_alpha.
   status = ParseHeadersInternal(headers->data, headers->data_size,
-                                NULL, NULL, NULL, &has_animation, headers);
+                                NULL, NULL, NULL, &has_animation,
+                                NULL, headers);
   if (status == VP8_STATUS_OK || status == VP8_STATUS_NOT_ENOUGH_DATA) {
     // TODO(jzern): full support of animation frames will require API additions.
     if (has_animation) {
@@ -452,11 +468,6 @@ static VP8StatusCode DecodeInto(const uint8_t* const data, size_t data_size,
     if (dec == NULL) {
       return VP8_STATUS_OUT_OF_MEMORY;
     }
-#ifdef WEBP_USE_THREAD
-    dec->use_threads_ = params->options && (params->options->use_threads > 0);
-#else
-    dec->use_threads_ = 0;
-#endif
     dec->alpha_data_ = headers.alpha_data;
     dec->alpha_data_size_ = headers.alpha_data_size;
 
@@ -468,6 +479,10 @@ static VP8StatusCode DecodeInto(const uint8_t* const data, size_t data_size,
       status = WebPAllocateDecBuffer(io.width, io.height, params->options,
                                      params->output);
       if (status == VP8_STATUS_OK) {  // Decode
+        // This change must be done before calling VP8Decode()
+        dec->mt_method_ = VP8GetThreadMethod(params->options, &headers,
+                                             io.width, io.height);
+        VP8InitDithering(params->options, dec);
         if (!VP8Decode(dec, &io)) {
           status = dec->status_;
         }
@@ -654,7 +669,6 @@ uint8_t* WebPDecodeYUV(const uint8_t* data, size_t data_size,
 static void DefaultFeatures(WebPBitstreamFeatures* const features) {
   assert(features != NULL);
   memset(features, 0, sizeof(*features));
-  features->bitstream_version = 0;
 }
 
 static VP8StatusCode GetFeatures(const uint8_t* const data, size_t data_size,
@@ -668,7 +682,7 @@ static VP8StatusCode GetFeatures(const uint8_t* const data, size_t data_size,
   return ParseHeadersInternal(data, data_size,
                               &features->width, &features->height,
                               &features->has_alpha, &features->has_animation,
-                              NULL);
+                              &features->format, NULL);
 }
 
 //------------------------------------------------------------------------------
@@ -806,6 +820,3 @@ int WebPIoInitFromOptions(const WebPDecoderOptions* const options,
 
 //------------------------------------------------------------------------------
 
-#if defined(__cplusplus) || defined(c_plusplus)
-}    // extern "C"
-#endif

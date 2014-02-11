@@ -53,6 +53,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "webp/decode.h"
 #include "webp/mux.h"
 #include "./example_util.h"
 
@@ -145,12 +146,6 @@ static const char* ErrorString(WebPMuxError err) {
     return err;                                                      \
   }
 
-#define RETURN_IF_ERROR2(ERR_MSG, FORMAT_STR)                        \
-  if (err != WEBP_MUX_OK) {                                          \
-    fprintf(stderr, ERR_MSG, FORMAT_STR);                            \
-    return err;                                                      \
-  }
-
 #define RETURN_IF_ERROR3(ERR_MSG, FORMAT_STR1, FORMAT_STR2)          \
   if (err != WEBP_MUX_OK) {                                          \
     fprintf(stderr, ERR_MSG, FORMAT_STR1, FORMAT_STR2);              \
@@ -183,7 +178,7 @@ static WebPMuxError DisplayInfo(const WebPMux* mux) {
   uint32_t flag;
 
   WebPMuxError err = WebPMuxGetCanvasSize(mux, &width, &height);
-  RETURN_IF_ERROR("Failed to retrieve canvas width/height.\n");
+  assert(err == WEBP_MUX_OK);  // As WebPMuxCreate() was successful earlier.
   printf("Canvas size: %d x %d\n", width, height);
 
   err = WebPMuxGetFeatures(mux, &flag);
@@ -216,26 +211,40 @@ static WebPMuxError DisplayInfo(const WebPMux* mux) {
     if (is_anim) {
       WebPMuxAnimParams params;
       err = WebPMuxGetAnimationParams(mux, &params);
-      RETURN_IF_ERROR("Failed to retrieve animation parameters\n");
+      assert(err == WEBP_MUX_OK);
       printf("Background color : 0x%.8X  Loop Count : %d\n",
              params.bgcolor, params.loop_count);
     }
 
     err = WebPMuxNumChunks(mux, id, &nFrames);
-    RETURN_IF_ERROR2("Failed to retrieve number of %ss\n", type_str);
+    assert(err == WEBP_MUX_OK);
 
     printf("Number of %ss: %d\n", type_str, nFrames);
     if (nFrames > 0) {
       int i;
-      printf("No.: x_offset y_offset ");
-      if (is_anim) printf("duration dispose ");
+      printf("No.: width height alpha x_offset y_offset ");
+      if (is_anim) printf("duration   dispose blend ");
       printf("image_size\n");
       for (i = 1; i <= nFrames; i++) {
         WebPMuxFrameInfo frame;
         err = WebPMuxGetFrame(mux, i, &frame);
         if (err == WEBP_MUX_OK) {
-          printf("%3d: %8d %8d ", i, frame.x_offset, frame.y_offset);
-          if (is_anim) printf("%8d %7d ", frame.duration, frame.dispose_method);
+          WebPBitstreamFeatures features;
+          const VP8StatusCode status = WebPGetFeatures(
+              frame.bitstream.bytes, frame.bitstream.size, &features);
+          assert(status == VP8_STATUS_OK);  // Checked by WebPMuxCreate().
+          (void)status;
+          printf("%3d: %5d %5d %5s %8d %8d ", i, features.width,
+                 features.height, features.has_alpha ? "yes" : "no",
+                 frame.x_offset, frame.y_offset);
+          if (is_anim) {
+            const char* const dispose =
+                (frame.dispose_method == WEBP_MUX_DISPOSE_NONE) ? "none"
+                                                                : "background";
+            const char* const blend =
+                (frame.blend_method == WEBP_MUX_BLEND) ? "yes" : "no";
+            printf("%8d %10s %5s ", frame.duration, dispose, blend);
+          }
           printf("%10d\n", (int)frame.bitstream.size);
         }
         WebPDataClear(&frame.bitstream);
@@ -247,21 +256,21 @@ static WebPMuxError DisplayInfo(const WebPMux* mux) {
   if (flag & ICCP_FLAG) {
     WebPData icc_profile;
     err = WebPMuxGetChunk(mux, "ICCP", &icc_profile);
-    RETURN_IF_ERROR("Failed to retrieve the ICC profile\n");
+    assert(err == WEBP_MUX_OK);
     printf("Size of the ICC profile data: %d\n", (int)icc_profile.size);
   }
 
   if (flag & EXIF_FLAG) {
     WebPData exif;
     err = WebPMuxGetChunk(mux, "EXIF", &exif);
-    RETURN_IF_ERROR("Failed to retrieve the EXIF metadata\n");
+    assert(err == WEBP_MUX_OK);
     printf("Size of the EXIF metadata: %d\n", (int)exif.size);
   }
 
   if (flag & XMP_FLAG) {
     WebPData xmp;
     err = WebPMuxGetChunk(mux, "XMP ", &xmp);
-    RETURN_IF_ERROR("Failed to retrieve the XMP metadata\n");
+    assert(err == WEBP_MUX_OK);
     printf("Size of the XMP metadata: %d\n", (int)xmp.size);
   }
 
@@ -333,11 +342,13 @@ static void PrintHelp(void) {
   printf("\n");
   printf("FRAME_OPTIONS(i):\n");
   printf(" Create animation.\n");
-  printf("   file_i +di+xi+yi+mi\n");
+  printf("   file_i +di+[xi+yi[+mi[bi]]]\n");
   printf("   where:    'file_i' is the i'th animation frame (WebP format),\n");
   printf("             'di' is the pause duration before next frame.\n");
   printf("             'xi','yi' specify the image offset for this frame.\n");
   printf("             'mi' is the dispose method for this frame (0 or 1).\n");
+  printf("             'bi' is the blending method for this frame (+b or -b)."
+         "\n");
 
   printf("\n");
   printf("LOOP_COUNT:\n");
@@ -414,22 +425,33 @@ static int WriteWebP(WebPMux* const mux, const char* filename) {
 
 static int ParseFrameArgs(const char* args, WebPMuxFrameInfo* const info) {
   int dispose_method, dummy;
-  const int num_args = sscanf(args, "+%d+%d+%d+%d+%d",
-                              &info->duration, &info->x_offset, &info->y_offset,
-                              &dispose_method, &dummy);
+  char plus_minus, blend_method;
+  const int num_args = sscanf(args, "+%d+%d+%d+%d%c%c+%d", &info->duration,
+                              &info->x_offset, &info->y_offset, &dispose_method,
+                              &plus_minus, &blend_method, &dummy);
   switch (num_args) {
     case 1:
       info->x_offset = info->y_offset = 0;  // fall through
     case 3:
       dispose_method = 0;  // fall through
     case 4:
+      plus_minus = '+';
+      blend_method = 'b';  // fall through
+    case 6:
       break;
+    case 2:
+    case 5:
     default:
       return 0;
   }
   // Note: The sanity of the following conversion is checked by
-  // WebPMuxSetAnimationParams().
+  // WebPMuxPushFrame().
   info->dispose_method = (WebPMuxAnimDispose)dispose_method;
+
+  if (blend_method != 'b') return 0;
+  if (plus_minus != '-' && plus_minus != '+') return 0;
+  info->blend_method =
+      (plus_minus == '+') ? WEBP_MUX_BLEND : WEBP_MUX_NO_BLEND;
   return 1;
 }
 
@@ -655,6 +677,17 @@ static int ParseCommandLine(int argc, const char* argv[],
                (version >> 16) & 0xff, (version >> 8) & 0xff, version & 0xff);
         DeleteConfig(config);
         exit(0);
+      } else if (!strcmp(argv[i], "--")) {
+        if (i < argc - 1) {
+          ++i;
+          if (config->input_ == NULL) {
+            config->input_ = argv[i];
+          } else {
+            ERROR_GOTO2("ERROR at '%s': Multiple input files specified.\n",
+                        argv[i], ErrParse);
+          }
+        }
+        break;
       } else {
         ERROR_GOTO2("ERROR: Unknown option: '%s'.\n", argv[i], ErrParse);
       }

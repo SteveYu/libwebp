@@ -31,13 +31,13 @@
 #include "./wicdec.h"
 
 #ifndef WEBP_DLL
-#if defined(__cplusplus) || defined(c_plusplus)
+#ifdef __cplusplus
 extern "C" {
 #endif
 
 extern void* VP8GetCPUInfo;   // opaque forward declaration.
 
-#if defined(__cplusplus) || defined(c_plusplus)
+#ifdef __cplusplus
 }    // extern "C"
 #endif
 #endif  // WEBP_DLL
@@ -494,6 +494,7 @@ static int WriteWebPWithMetadata(FILE* const out,
     if (has_vp8x) {  // update the existing VP8X flags
       webp[kChunkHeaderSize] |= (uint8_t)(flags & 0xff);
       ok = ok && (fwrite(webp, kVP8XChunkSize, 1, out) == 1);
+      webp += kVP8XChunkSize;
       webp_size -= kVP8XChunkSize;
     } else {
       const int is_lossless = !memcmp(webp, "VP8L", kTagSize);
@@ -895,6 +896,9 @@ int main(int argc, const char *argv[]) {
 #endif
     } else if (!strcmp(argv[c], "-v")) {
       verbose = 1;
+    } else if (!strcmp(argv[c], "--")) {
+      if (c < argc - 1) in_file = argv[++c];
+      break;
     } else if (argv[c][0] == '-') {
       fprintf(stderr, "Error! Unknown option '%s'\n", argv[c]);
       HelpLong();
@@ -929,7 +933,7 @@ int main(int argc, const char *argv[]) {
 
   // Read the input
   if (verbose) {
-    StopwatchReadAndReset(&stop_watch);
+    StopwatchReset(&stop_watch);
   }
   if (!ReadPicture(in_file, &picture, keep_alpha,
                    (keep_metadata == 0) ? NULL : &metadata)) {
@@ -983,7 +987,7 @@ int main(int argc, const char *argv[]) {
 
   // Compress
   if (verbose) {
-    StopwatchReadAndReset(&stop_watch);
+    StopwatchReset(&stop_watch);
   }
   if (crop != 0) {
     // We use self-cropping using a view.
@@ -1024,11 +1028,32 @@ int main(int argc, const char *argv[]) {
     }
   }
 
-  if (keep_metadata != 0 && out != NULL) {
-    if (!WriteWebPWithMetadata(out, &picture, &memory_writer,
-                               &metadata, keep_metadata, &metadata_written)) {
-      fprintf(stderr, "Error writing WebP file with metadata!\n");
-      goto Error;
+  if (keep_metadata != 0) {
+    if (out != NULL) {
+      if (!WriteWebPWithMetadata(out, &picture, &memory_writer,
+                                 &metadata, keep_metadata, &metadata_written)) {
+        fprintf(stderr, "Error writing WebP file with metadata!\n");
+        goto Error;
+      }
+    } else {  // output is disabled, just display the metadata stats.
+      const struct {
+        const MetadataPayload* const payload;
+        int flag;
+      } *iter, info[] = {
+        { &metadata.exif, METADATA_EXIF },
+        { &metadata.iccp, METADATA_ICC },
+        { &metadata.xmp, METADATA_XMP },
+        { NULL, 0 }
+      };
+      uint32_t unused1 = 0;
+      uint64_t unused2 = 0;
+
+      for (iter = info; iter->payload != NULL; ++iter) {
+        if (UpdateFlagsAndSize(iter->payload, !!(keep_metadata & iter->flag),
+                               0, &unused1, &unused2)) {
+          metadata_written |= iter->flag;
+        }
+      }
     }
   }
 
@@ -1045,8 +1070,22 @@ int main(int argc, const char *argv[]) {
   if (!quiet && !short_output && print_distortion >= 0) {  // print distortion
     static const char* distortion_names[] = { "PSNR", "SSIM", "LSIM" };
     float values[5];
-    WebPPictureDistortion(&picture, &original_picture,
-                          print_distortion, values);
+    // Comparison is performed in YUVA colorspace.
+    if (original_picture.use_argb &&
+        !WebPPictureARGBToYUVA(&original_picture, WEBP_YUV420A)) {
+      fprintf(stderr, "Error while converting original picture to YUVA.\n");
+      goto Error;
+    }
+    if (picture.use_argb &&
+        !WebPPictureARGBToYUVA(&picture, WEBP_YUV420A)) {
+      fprintf(stderr, "Error while converting compressed picture to YUVA.\n");
+      goto Error;
+    }
+    if (!WebPPictureDistortion(&picture, &original_picture,
+                               print_distortion, values)) {
+      fprintf(stderr, "Error while computing the distortion.\n");
+      goto Error;
+    }
     fprintf(stderr, "%s: Y:%.2f U:%.2f V:%.2f A:%.2f  Total:%.2f\n",
             distortion_names[print_distortion],
             values[0], values[1], values[2], values[3], values[4]);

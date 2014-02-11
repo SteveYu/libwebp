@@ -22,10 +22,6 @@
 #include "../utils/huffman.h"
 #include "../utils/utils.h"
 
-#if defined(__cplusplus) || defined(c_plusplus)
-extern "C" {
-#endif
-
 #define NUM_ARGB_CACHE_ROWS          16
 
 static const int kCodeLengthLiterals = 16;
@@ -84,20 +80,19 @@ static int DecodeImageStream(int xsize, int ysize,
 //------------------------------------------------------------------------------
 
 int VP8LCheckSignature(const uint8_t* const data, size_t size) {
-  return (size >= 1) && (data[0] == VP8L_MAGIC_BYTE);
+  return (size >= VP8L_FRAME_HEADER_SIZE &&
+          data[0] == VP8L_MAGIC_BYTE &&
+          (data[4] >> 5) == 0);  // version
 }
 
 static int ReadImageInfo(VP8LBitReader* const br,
                          int* const width, int* const height,
                          int* const has_alpha) {
-  const uint8_t signature = VP8LReadBits(br, 8);
-  if (!VP8LCheckSignature(&signature, 1)) {
-    return 0;
-  }
+  if (VP8LReadBits(br, 8) != VP8L_MAGIC_BYTE) return 0;
   *width = VP8LReadBits(br, VP8L_IMAGE_SIZE_BITS) + 1;
   *height = VP8LReadBits(br, VP8L_IMAGE_SIZE_BITS) + 1;
   *has_alpha = VP8LReadBits(br, 1);
-  VP8LReadBits(br, VP8L_VERSION_BITS);  // Read/ignore the version number.
+  if (VP8LReadBits(br, VP8L_VERSION_BITS) != 0) return 0;
   return 1;
 }
 
@@ -105,6 +100,8 @@ int VP8LGetInfo(const uint8_t* data, size_t data_size,
                 int* const width, int* const height, int* const has_alpha) {
   if (data == NULL || data_size < VP8L_FRAME_HEADER_SIZE) {
     return 0;         // not enough data
+  } else if (!VP8LCheckSignature(data, data_size)) {
+    return 0;         // bad signature
   } else {
     int w, h, a;
     VP8LBitReader br;
@@ -480,7 +477,8 @@ static void ConvertToYUVA(const uint32_t* const src, int width, int y_pos,
     uint8_t* const y = buf->y + y_pos * buf->y_stride;
     for (i = 0; i < width; ++i) {
       const uint32_t p = src[i];
-      y[i] = VP8RGBToY((p >> 16) & 0xff, (p >> 8) & 0xff, (p >> 0) & 0xff);
+      y[i] = VP8RGBToY((p >> 16) & 0xff, (p >> 8) & 0xff, (p >> 0) & 0xff,
+                       YUV_HALF);
     }
   }
 
@@ -499,11 +497,11 @@ static void ConvertToYUVA(const uint32_t* const src, int width, int y_pos,
       const int g = ((v0 >>  7) & 0x1fe) + ((v1 >>  7) & 0x1fe);
       const int b = ((v0 <<  1) & 0x1fe) + ((v1 <<  1) & 0x1fe);
       if (!(y_pos & 1)) {  // even lines: store values
-        u[i] = VP8RGBToU(r, g, b);
-        v[i] = VP8RGBToV(r, g, b);
+        u[i] = VP8RGBToU(r, g, b, YUV_HALF << 2);
+        v[i] = VP8RGBToV(r, g, b, YUV_HALF << 2);
       } else {             // odd lines: average with previous values
-        const int tmp_u = VP8RGBToU(r, g, b);
-        const int tmp_v = VP8RGBToV(r, g, b);
+        const int tmp_u = VP8RGBToU(r, g, b, YUV_HALF << 2);
+        const int tmp_v = VP8RGBToV(r, g, b, YUV_HALF << 2);
         // Approximated average-of-four. But it's an acceptable diff.
         u[i] = (u[i] + tmp_u + 1) >> 1;
         v[i] = (v[i] + tmp_v + 1) >> 1;
@@ -515,11 +513,11 @@ static void ConvertToYUVA(const uint32_t* const src, int width, int y_pos,
       const int g = (v0 >>  6) & 0x3fc;
       const int b = (v0 <<  2) & 0x3fc;
       if (!(y_pos & 1)) {  // even lines
-        u[i] = VP8RGBToU(r, g, b);
-        v[i] = VP8RGBToV(r, g, b);
+        u[i] = VP8RGBToU(r, g, b, YUV_HALF << 2);
+        v[i] = VP8RGBToV(r, g, b, YUV_HALF << 2);
       } else {             // odd lines (note: we could just skip this)
-        const int tmp_u = VP8RGBToU(r, g, b);
-        const int tmp_v = VP8RGBToV(r, g, b);
+        const int tmp_u = VP8RGBToU(r, g, b, YUV_HALF << 2);
+        const int tmp_v = VP8RGBToV(r, g, b, YUV_HALF << 2);
         u[i] = (u[i] + tmp_u + 1) >> 1;
         v[i] = (v[i] + tmp_v + 1) >> 1;
       }
@@ -1380,6 +1378,3 @@ int VP8LDecodeImage(VP8LDecoder* const dec) {
 
 //------------------------------------------------------------------------------
 
-#if defined(__cplusplus) || defined(c_plusplus)
-}    // extern "C"
-#endif

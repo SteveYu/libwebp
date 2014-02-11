@@ -1,4 +1,4 @@
-AC_INIT([libwebp], [0.3.1],
+AC_INIT([libwebp], [0.4.0],
         [http://code.google.com/p/webp/issues],,
         [http://developers.google.com/speed/webp])
 AC_CANONICAL_TARGET
@@ -187,6 +187,8 @@ if test "$glut_headers" = "yes"; then
            glutMainLoop();
           ])
         ],
+        AC_DEFINE(WEBP_HAVE_GL, [1],
+                  [Set to 1 if OpenGL is supported])
         [glut_support=yes], []
       )
       if test "$glut_support" = "yes"; then
@@ -296,6 +298,8 @@ LIBCHECK_PROLOGUE([GIF])
 AC_CHECK_HEADER(gif_lib.h,
   AC_CHECK_LIB([gif], [DGifOpenFileHandle],
                [GIF_LIBS="$GIF_LIBS -lgif"
+                AC_DEFINE(WEBP_HAVE_GIF, [1],
+                          [Set to 1 if GIF library is installed])
                 gif_support=yes
                ],
                AC_MSG_WARN(Optional gif library not found),
@@ -312,7 +316,13 @@ AM_CONDITIONAL([BUILD_GIF2WEBP], [test "${build_gif2webp}" = "yes"])
 
 dnl === check for WIC support ===
 
-if test "$target_os" = "mingw32"; then
+AC_ARG_ENABLE([wic],
+              AS_HELP_STRING([--disable-wic],
+                             [Disable Windows Imaging Component (WIC) detection.
+                              @<:@default=auto@:>@]),,
+              [enable_wic=yes])
+
+if test "$target_os" = "mingw32" -a "$enable_wic" = "yes"; then
   AC_CHECK_HEADERS([wincodec.h shlwapi.h windows.h])
   if test "$ac_cv_header_wincodec_h" = "yes"; then
     AC_MSG_CHECKING(for Windows Imaging Component support)
@@ -443,7 +453,8 @@ dwebp : yes
   =====================
   PNG  : ${png_support-no}
   WIC  : ${wic_support-no}
-gif2webp : ${build_gif2webp-no}
-webpmux  : ${enable_libwebpmux-no}
-vwebp    : ${build_vwebp-no}
+GIF support : ${gif_support-no}
+gif2webp    : ${build_gif2webp-no}
+webpmux     : ${enable_libwebpmux-no}
+vwebp       : ${build_vwebp-no}
 ])

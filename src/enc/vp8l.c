@@ -25,10 +25,6 @@
 #include "../utils/utils.h"
 #include "../webp/format_constants.h"
 
-#if defined(__cplusplus) || defined(c_plusplus)
-extern "C" {
-#endif
-
 #define PALETTE_KEY_RIGHT_SHIFT   22  // Key for 1K buffer.
 #define MAX_HUFF_IMAGE_SIZE       (16 * 1024 * 1024)
 #define MAX_COLORS_FOR_GRAPH      64
@@ -448,12 +444,12 @@ static void StoreImageToBitMask(
       int bits, n_bits;
       int code, distance;
 
-      PrefixEncode(v->len, &code, &n_bits, &bits);
+      VP8LPrefixEncode(v->len, &code, &n_bits, &bits);
       WriteHuffmanCode(bw, codes, 256 + code);
       VP8LWriteBits(bw, n_bits, bits);
 
       distance = PixOrCopyDistance(v);
-      PrefixEncode(distance, &code, &n_bits, &bits);
+      VP8LPrefixEncode(distance, &code, &n_bits, &bits);
       WriteHuffmanCode(bw, codes + 4, code);
       VP8LWriteBits(bw, n_bits, bits);
     }
@@ -892,7 +888,7 @@ static WebPEncodingError EncodePalette(VP8LBitWriter* const bw,
   if (err != VP8_ENC_OK) goto Error;
   dst = enc->argb_;
 
-  row = WebPSafeMalloc((uint64_t)width, sizeof(*row));
+  row = (uint8_t*)WebPSafeMalloc((uint64_t)width, sizeof(*row));
   if (row == NULL) return VP8_ENC_ERROR_OUT_OF_MEMORY;
 
   ApplyPalette(src, dst, pic->argb_stride, enc->current_width_,
@@ -1170,6 +1166,3 @@ int VP8LEncodeImage(const WebPConfig* const config,
 
 //------------------------------------------------------------------------------
 
-#if defined(__cplusplus) || defined(c_plusplus)
-}    // extern "C"
-#endif

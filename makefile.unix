@@ -141,6 +141,9 @@ EX_FORMAT_DEC_OBJS = \
 EX_UTIL_OBJS = \
     examples/example_util.o \
 
+GIF2WEBP_UTIL_OBJS = \
+    examples/gif2webp_util.o \
+
 MUX_OBJS = \
     src/mux/muxedit.o \
     src/mux/muxinternal.o \
@@ -153,6 +156,7 @@ UTILS_DEC_OBJS = \
     src/utils/filters.o \
     src/utils/huffman.o \
     src/utils/quant_levels_dec.o \
+    src/utils/random.o \
     src/utils/rescaler.o \
     src/utils/thread.o \
     src/utils/utils.o \
@@ -196,6 +200,7 @@ HDRS = \
     src/utils/huffman_encode.h \
     src/utils/quant_levels.h \
     src/utils/quant_levels_dec.h \
+    src/utils/random.h \
     src/utils/rescaler.h \
     src/utils/thread.h \
     src/webp/format_constants.h \
@@ -209,6 +214,7 @@ OUTPUT = $(OUT_LIBS) $(OUT_EXAMPLES)
 ifeq ($(MAKECMDGOALS),clean)
   OUTPUT += $(EXTRA_EXAMPLES)
   OUTPUT += src/demux/libwebpdemux.a src/mux/libwebpmux.a
+  OUTPUT += examples/libgif2webp_util.a
 endif
 
 ex: $(OUT_EXAMPLES)
@@ -220,6 +226,7 @@ $(EX_FORMAT_DEC_OBJS): %.o: %.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 examples/libexample_util.a: $(EX_UTIL_OBJS)
+examples/libgif2webp_util.a: $(GIF2WEBP_UTIL_OBJS)
 src/libwebpdecoder.a: $(LIBWEBPDECODER_OBJS)
 src/libwebp.a: $(LIBWEBP_OBJS)
 src/mux/libwebpmux.a: $(LIBWEBPMUX_OBJS)
@@ -238,11 +245,14 @@ examples/cwebp: src/libwebp.a
 examples/cwebp: EXTRA_LIBS += $(CWEBP_LIBS)
 examples/dwebp: examples/libexample_util.a src/libwebpdecoder.a
 examples/dwebp: EXTRA_LIBS += $(DWEBP_LIBS)
-examples/gif2webp: examples/libexample_util.a src/mux/libwebpmux.a src/libwebp.a
+examples/gif2webp: examples/libexample_util.a examples/libgif2webp_util.a
+examples/gif2webp: src/mux/libwebpmux.a src/libwebp.a
 examples/gif2webp: EXTRA_LIBS += $(GIF_LIBS)
+examples/gif2webp: EXTRA_FLAGS += -DWEBP_HAVE_GIF
 examples/vwebp: examples/libexample_util.a src/demux/libwebpdemux.a
 examples/vwebp: src/libwebp.a
 examples/vwebp: EXTRA_LIBS += $(GL_LIBS)
+examples/vwebp: EXTRA_FLAGS += -DWEBP_HAVE_GL
 examples/webpmux: examples/libexample_util.a src/mux/libwebpmux.a
 examples/webpmux: src/libwebpdecoder.a
 
@@ -253,8 +263,8 @@ dist: DESTDIR := dist
 dist: OUT_EXAMPLES += $(EXTRA_EXAMPLES)
 dist: all
 	$(INSTALL) -m755 -d $(DESTDIR)/include/webp \
-	           $(DESTDIR)/doc $(DESTDIR)/lib
-	$(INSTALL) -m755 -s $(OUT_EXAMPLES) $(DESTDIR)
+	           $(DESTDIR)/bin $(DESTDIR)/doc $(DESTDIR)/lib
+	$(INSTALL) -m755 -s $(OUT_EXAMPLES) $(DESTDIR)/bin
 	$(INSTALL) -m644 $(HDRS_INSTALLED) $(DESTDIR)/include/webp
 	$(INSTALL) -m644 src/libwebp.a $(DESTDIR)/lib
 	$(INSTALL) -m644 src/demux/libwebpdemux.a $(DESTDIR)/lib
