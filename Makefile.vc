@@ -27,6 +27,7 @@ PLATFORM_LDFLAGS = /SAFESEH
 NOLOGO     = /nologo
 CCNODBG    = cl.exe $(NOLOGO) /O2 /DNDEBUG
 CCDEBUG    = cl.exe $(NOLOGO) /Od /Gm /Zi /D_DEBUG /RTC1
+CCRELWITHDEBINFO = cl.exe $(NOLOGO) /O2 /Gm /Zi /DNDEBUG
 CFLAGS     = /Isrc $(NOLOGO) /W3 /EHsc /c /GS
 CFLAGS     = $(CFLAGS) /DWIN32 /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN
 CFLAGS     = $(CFLAGS) /DHAVE_WINCODEC_H /DWEBP_USE_THREAD
@@ -91,6 +92,9 @@ LIBWEBPDECODER_BASENAME = $(LIBWEBPDECODER_BASENAME)_debug
 LIBWEBP_BASENAME = $(LIBWEBP_BASENAME)_debug
 LIBWEBPMUX_BASENAME = $(LIBWEBPMUX_BASENAME)_debug
 LIBWEBPDEMUX_BASENAME = $(LIBWEBPDEMUX_BASENAME)_debug
+!ELSE IF "$(CFG)" == "relWithDebInfo-dynamic"
+CC        = $(CCRELWITHDEBINFO)
+DLLBUILD  = TRUE
 !ENDIF
 
 !IF "$(STATICLIBBUILD)" == "TRUE"
@@ -125,6 +129,7 @@ CFGSET = TRUE
 !MESSAGE -  debug-static                  - debug static library
 !MESSAGE -  release-dynamic               - release dynamic link library (DLL)
 !MESSAGE -  debug-dynamic                 - debug dynamic link library (DLL)
+!MESSAGE -  relWithDebInfo-dynamic        - release dynamic link library (DLL) with debug information
 !MESSAGE
 !MESSAGE <target> may be:
 !MESSAGE -  clean                         - perform a clean for CFG
